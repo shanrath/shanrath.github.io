@@ -1,492 +1,427 @@
-
-// CodeMirror, copyright (c) by Marijn Haverbeke and others
+// CodeMirror, copyright (c) by Liuxiaole
 // Distributed under an MIT license: http://codemirror.net/LICENSE
-//
-
-//based on Magnus Ljung's freemarker parser for CodeMirror I
-
-//variable-2 is actually for ${variable}, builtin for ?floor
 
 (function(mod) {
   if (typeof exports == "object" && typeof module == "object") // CommonJS
-    mod(require("../../lib/codemirror"));
+    mod(require("../../lib/codemirror"), require("../htmlmixed/htmlmixed"));
   else if (typeof define == "function" && define.amd) // AMD
-    define(["../../lib/codemirror"], mod);
+    define(["../../lib/codemirror", "../htmlmixed/htmlmixed"], mod);
   else // Plain browser env
     mod(CodeMirror);
 })(function(CodeMirror) {
-	
-	CodeMirror.defineMode("freemarker", function(config) {
-        var autoSelfClosers = {"else": true, "elseif": true};
-        var tokens, token;
-        var cc = [base];
-        var tokenNr = 0, indented = 0;
-        var currentTag = null, context = null;
-        var consume;
-        var harmlessTokens = { "text": true, "comment": true };
+  "use strict";
 
-        function tokenizeFreemarker (stream, state) {
-            function tokenizer(stream, state) {
-                // Newlines are always a separate token.
-                function isWhiteSpace(ch) {
-                    return ch != "\n" && /^[\s\u00a0]*$/.test(ch);
-                }
+  var prevContent;
 
-                var tokenizer = {
-                    state: state,
+  var identifier = /[0-9a-zA-Z-_$]/;
+  var isOperatorChar = /[+\-*\/%=<>!\?.&:,;]/;
 
-                    take: function(type) {
-                        if (typeof(type) == "string")
-                            type = {style: type, type: type};
+  var pairCloseDirective = " if switch macro function list noparse compress escape noescape attempt recurse fallback ";
 
-                        type.content = (type.content || "") + stream.current();
-                        if (!/\n$/.test(type.content))
-                            stream.eatWhile(isWhiteSpace, true);
-                        type.value = type.content + stream.current();
-                        return type;
-                    },
+  var selfCloseDirective = " else elseif case default break return nested assign include import global local setting flush stop ftl t lt rt nt recover visit recure ";
 
-                    next: function () {
-                      if (stream.eol()){
-                          stream.next();
-                          return true;
-                      }
+  var builtin = "substring cap_first uncap_first capitalize chop_linebreak date time datetime ends_with html group index_of j_string js_string js_string length lower_case left_pad right_pad contains matches number replace rtf url split starts_with string trim upper_case word_list xhtml xml c round floor ceiling short medium long full first last seq_contains seq_index_of seq_last_index_of reverse size sort sort_by chunk keys byte double float int eval has_content interpret is_string is_number is_boolean is_date is_method is_transform is_macro is_hash is_hash_ex is_sequence is_collection is_enumerable is_indexable is_directive is_node namespace new";
 
-                      var type;
-                      if (stream.peek() == "\n") {
-                        stream.next();
-                        return this.take("whitespace");
-                      }
+  var atoms = "as in true false using gt gte lt lte";
 
-                      if ( stream.peek() !== null && isWhiteSpace(stream.peek()) )
-                        type = "whitespace";
-                      else
-                        while (!type)
-                          type = this.state(stream, function(s) {tokenizer.state = s;});
+  function words(str) {
+    var obj = {}, words = str.split(/\s+/);
+    for (var i = 0; i < words.length; ++i) obj[words[i]] = true;
+    return obj;
+  }
 
-                      return this.take(type);
-                    }
-                };
+  CodeMirror.defineMode("ftl:inner", function(config, parserConfig){
 
-                return tokenizer;
+    function Context(indented, column, type, align, prev) {
+      this.indented = indented;
+      this.column = column;
+      this.type = type;
+      this.align = align;
+      this.prev = prev;
+    }
+
+    function pushContext(state, col, type, align) {
+      return state.context = new Context(state.indented, col, type, align, state.context);
+    }
+
+    function popContext(state) {
+      if (!state.context.prev) return;
+      var t = state.context.type;
+      state.indented = state.context.indented;
+
+      return state.context = state.context.prev;
+    }
+
+    function tokenComment(stream, state) {
+      while (!stream.eol()) {
+        if (stream.match('-->')) {
+          state.tokenize = null;
+          break;
+        }
+        stream.next();
+      }
+      return "comment";
+    }
+
+    function tokenBase(end, style, hook){
+      function tokenBaseInner(stream, state){
+        var ch = stream.next();
+
+        if (ch == '"' || ch == "'") {
+          var curToken = state.tokenize;
+          state.tokenize = tokenString(ch, curToken);
+          return state.tokenize(stream, state);
+        }
+        if (/\d/.test(ch)) {
+          stream.match(/^[0-9]*\.?[0-9]*([eE][\-+]?[0-9]+)?/);
+          return "number";
+        }
+
+        if (/[\[\]{}\(\)]/.test(ch)) {
+          if(ch == '{') pushContext(state, stream.column(), '}');
+          else if(ch == '[') pushContext(state, stream.column(), ']');
+          else if(ch == '(') pushContext(state, stream.column(), ')');
+          else {
+            if(ch === state.context.type) {
+              popContext(state);
+              return 'bracket';
+            } else if(ch === end) {
+              state.tokenize = null;
+              return style;
             }
+          }
 
-            function inText(stream, setState) {
+          return 'bracket';
+        }
 
-                var ch = stream.next();
-                if (ch == "<") {
-                    if (stream.peek() && stream.peek() == "!") {
-                        stream.next();
-                        if (stream.match("--", true, false)) {
-                            setState(inBlock("comment", "-->"));
-                            return null;
-                        } else {
-                            return "text";
-                        }
-                    } else {
-                        stream.eatWhile(/[\#\@\/]/, true);
-                        setState(inFreemarker(">"));
-                        return "boundary";
-                    }
-                }
-                else if (ch == "[") {
-                    if(stream.peek() && stream.peek().match(/[\#\@]/) !== null) {
-                        setState(pendingFreemarker(stream.peek(), "]", false));
-                        return "boundary";
-                    } else if(stream.peek() && stream.peek().match(/\//) !== null) {
-                        setState(pendingFreemarkerEnd("]"));
-                        return "boundary";
-                    } else {
-                        return "text";
-                    }
-                }
-                else if (ch == "$") {
-                    if(stream.peek() && stream.peek().match(/[\{\w]/) !== null) {
-                        setState(pendingFreemarker("{", "}", true));
-                        return "variable-2";
-                    } else {
-                        return "text";
-                    }
-                }
-                else {
-                    stream.match(/[^\$<\n]/, true);
-                    return "text";
-                }
-            }
+        if (isOperatorChar.test(ch)) {
+          if(ch == '>' && end == '>') {
+            state.tokenize = null;
+            return style;
+          }
 
-            function pendingFreemarker(startChar, endChar, nextCanBeIdentifier) {
-                return function(stream, setState) {
-                    var ch = stream.next();
-                    if(ch == startChar) {
-                        setState(inFreemarker(endChar));
-                        return "variable-2";
-                    } else if(nextCanBeIdentifier) {
-                        stream.match(/\w/, true);
-                        setState(inText);
-                        return "variable-2";
-                    } else {
-                        setState(inText);
-                        return null;
-                    }
-                }
-            }
 
-            function pendingFreemarkerEnd(endChar) {
-                return function(stream, setState) {
-                    var ch = stream.next();
-                    if(ch == "/") {
-                        setState(pendingFreemarker(stream.peek(), endChar, false));
-                        return "boundary";
-                    } else {
-                        setState(inText);
-                        return null;
-                    }
-                }
-            }
+          if(ch == '&') {
+            stream.match(/gt;|lt;/);
+          } 
 
-            function inFreemarker(terminator) {
-                return function(stream, setState) {
+          if(ch == '/' && end == '>' && stream.peek() == end) {
+            stream.next();
+            state.tokenize = null;
+            return style;
+          }
 
-                    var ch = stream.next();
-                    if (ch == terminator) {
-                        setState(inText);
-                        if (terminator == "}")
-                            return "variable-2";
-                        return "boundary";
-                    } else if (/[?\/]/.test(ch) && stream.peek() == terminator) {
-                        stream.next();
-                        setState(inText);
-                        return "boundary";
-                    } else if(/[?!]/.test(ch)) {
-                        if(ch == "?") {
-                            if(stream.peek() == "?") {
-                                stream.next();
-                            } else {
-                                setState(inBuiltIn(inFreemarker(terminator)));
-                            }
-                        }
-                        return "builtin";
-                    } else if(/\(/.test(ch)) {
-                        setState(inExpression(")", terminator));
-                        return "punctuation";
-                    }
-                    else if(/[+\/\-*%=]/.test(ch)) {
-                        return "punctuation";
-                    } else if (/[0-9]/.test(ch)) {
-                        stream.eatWhile(/[0-9\.]/, true);
-                        return "number";
-                    } else if (/\w/.test(ch)) {
-                        stream.match(/\w/, true);
-                        if (terminator == "}")
-                            return "variable-2";
-                        return "identifier"
-                    } else if(/[\'\"]/.test(ch)) {
-                        setState(inString(ch, inFreemarker(terminator)));
-                        return "string";
-                    } else {
-                        stream.match(/[^\s\u00a0<>\"\'\}?!\/]/, true);
-                        return "generic";
-                    }
-                };
-            }
+          return "operator";
+        }
 
-            function inExpression(terminator, outerTerminator) {
-                return function(stream, setState) {
-                    var ch = stream.next();
+        stream.eatWhile(identifier);
+        var cur = stream.current();
 
-                    if (ch == terminator) {
-                        setState(inFreemarker(outerTerminator));
-                        return "punctuation";
-                    } else if (/[?\/]/.test(ch) && stream.peek() == terminator) {
-                        stream.next();
-                        setState(inText);
-                        return "boundary";
-                    } else if(/[?!]/.test(ch)) {
-                        if(ch == "?") {
-                            if(stream.peek() == "?") {
-                                stream.next();
-                            } else {
-                                setState(inBuiltIn(inExpression(")", outerTerminator)));
-                            }
-                        }
-                        return "builtin";
-                    } else if(/\(/.test(ch)) {
-                        setState(inExpression(")", outerTerminator));
-                        return "punctuation";
-                    }
-                    else if(/[+\/\-*%=]/.test(ch)) {
-                        return "punctuation";
-                    } else if (/[0-9]/.test(ch)) {
-                        stream.eatWhile(/[0-9\.]/, true);
-                        return "number";
-                    } else if (/\w/.test(ch)) {
-                        stream.match(/\w/, true);
-                        if (terminator == "}")
-                            return "variable-2";
-                        return "identifier"
-                    } else if(/[\'\"]/.test(ch)) {
-                        setState(inString(ch, inExpression(")", outerTerminator)));
-                        return "string";
-                    } else {
-                        stream.match(/[^\s\u00a0<>\"\'\}?!\/]/, true);
-                        return "generic";
-                    }
-                }
-            }
+        if (prevContent == '?' && parserConfig.builtin.propertyIsEnumerable(cur)) {
+          return "builtin";
+        }
 
-            function inBuiltIn(nextState) {
-                return function(stream, setState) {
-                    var ch = stream.peek();
-                    if(/[a-zA-Z_]/.test(ch)) {
-                        stream.next();
-                        stream.match(/[a-zA-Z_0-9\.]+/, true);
-                        setState(nextState);
-                        return "builtin";
-                    } else {
-                        setState(nextState);
-                    }
-                };
-            }
+        if (parserConfig.atoms.propertyIsEnumerable(cur)) return "atom";
 
-            function inString(quote, nextState) {
-                return function(stream, setState) {
-                    while (!stream.eol()) {
-                        if (stream.next() == quote) {
-                            setState(nextState);
-                            break;
-                        }
-                    }
-                    return "string";
-                };
-            }
+        return "variable";
+      };
 
-            function inBlock(style, terminator) {
-                return function(stream, setState) {
-                    while (!stream.eol()) {
-                        if (stream.match(terminator, true)) {
-                            setState(inText);
-                            break;
-                        }
-                        stream.next();
-                    }
-                    return style;
-                };
-            }
+      return function(stream, state){
+        var style = tokenBaseInner(stream, state);
+        var content = stream.current();
 
-            return  tokenizer(stream, state || inText);
+        if(typeof hook === 'function') {
+          style = hook(style, content, stream, state);
+        }
+
+        return style;
+      };
+    }
+
+
+    function tokenString(quote, endToken) {
+      return function(stream, state) {
+        var escaped = false, next, end = false;
+        while ((next = stream.next()) != null) {
+          if (next == quote && !escaped) {end = true; break;}
+          escaped = !escaped && next == "\\";
+        }
+        if (end) state.tokenize = endToken;
+        return "string";
+      };
+    }
+
+
+    function tokenOpenDirective(stream, state){
+      stream.eatWhile(identifier);
+      var directive = stream.current();
+      var style;
+
+      if(parserConfig.directive.propertyIsEnumerable(directive)) {
+        style = "keyword";
+      } else {
+        style = 'keyword error';
+      }
+
+
+      pushContext(state, stream.column(), directive);
+
+      var hook, isFirst;
+      if(directive == 'function' || directive == 'macro') {
+        isFirst = true;
+        hook = function(style, content, stream, state){
+          if(isFirst) {
+            isFirst = false;
+            if(style != 'variable') return 'error';
+            else return 'def';
+          }
+
+          return style;
         };
+      } 
 
-        function push(fs) {
-            for (var i = fs.length - 1; i >= 0; i--)
-                cc.push(fs[i]);
-        }
-        function cont() {
-            push(arguments);
-            consume = true;
-        }
-        function pass() {
-            push(arguments);
-            consume = false;
-        }
+      state.tokenize = tokenBase('>', 'tag bracket', hook);
 
-        function markErr() {
-            token.style += " freemarker-error";
-        }
 
-        function expect(text) {
-            return function(style, content) {
-                if (content == text) cont();
-                else {markErr(); cont(arguments.callee);}
-            };
-        }
+      return style;
+    }
 
-        function pushContext(tagname, startOfLine) {
-            context = {prev: context, name: tagname, indent: indented, startOfLine: startOfLine};
+    function tokenCloseDirective(stream, state){
+      if(stream.eat('>')) {
+        state.tokenize = null;
+        return 'tag bracket';
+      }
+
+      stream.eatWhile(/[^\>]/);
+      
+      var directive = stream.current();
+      var style;
+
+      if(parserConfig.directive.propertyIsEnumerable(directive)) {
+        style = 'keyword';
+        
+        while(directive != state.context.type && 
+            parserConfig.selfCloseDirective.propertyIsEnumerable(state.context.type) ) {
+          popContext(state);
         }
 
-        function popContext() {
-            context = context.prev;
+        if(directive == state.context.type) {
+          popContext(state);
+        } else {
+          style += ' error';
         }
 
-        function computeIndentation(baseContext) {
-            return function(nextChars, current, direction, firstToken) {
-                var context = baseContext;
+      } else {
+        style = 'error'
+      }
 
-                nextChars = getThreeTokens(firstToken);
+      return style;
+    }
 
-                if ((context && /^<\/\#/.test(nextChars)) ||
-                    (context && /^\[\/\#/.test(nextChars))) {
-                    context = context.prev;
-                }
 
-                while (context && !context.startOfLine) {
-                    context = context.prev;
-                }
-
-                if (context) {
-                    if(/^<\#else/.test(nextChars) ||
-                       /^\[\#else/.test(nextChars)) {
-                        return context.indent;
-                    }
-                    return context.indent + indentUnit;
-                } else {
-                    return 0;
-                }
-            };
+    function tokenOpenMacro(stream, state){
+      var isFirst = true, macroName;
+      var hook = function(style, content, stream, state){
+        if(isFirst && style == 'variable') {
+          isFirst = false;
+          macroName = content;
+          return 'variable-3';
         }
-
-        function getThreeTokens(firstToken) {
-            var secondToken = firstToken ? firstToken.nextSibling : null;
-            var thirdToken = secondToken ? secondToken.nextSibling : null;
-
-            var nextChars = (firstToken && firstToken.currentText) ? firstToken.currentText : "";
-            if(secondToken && secondToken.currentText) {
-                nextChars = nextChars + secondToken.currentText;
-                if(thirdToken && thirdToken.currentText) {
-                    nextChars = nextChars + thirdToken.currentText;
-                }
-            }
-
-            return nextChars;
+        if(style == 'tag bracket' && content == '>') {
+          pushContext(state, stream.column(), '@'+macroName);
         }
+        return style;
+      };
 
-        function base() {
-            return pass(element, base);
-        }
-
-        function element(style, content) {
-            if (content == "<#") {
-                cont(tagname, notEndTag, endtag("/>", ">", tokenNr == 1));
-            } else if (content == "</#") {
-                cont(closetagname, expect(">"));
-            } else if(content == "[" && style == "boundary") {
-                cont(hashOrCloseHash);
-            } else {
-                cont();
-            }
-        }
-
-        function hashOrCloseHash(style, content) {
-            if(content == "#") {
-                cont(tagname, notHashEndTag, endtag("/]", "]", tokenNr == 2));
-            } else if(content == "/") {
-                cont(closeHash);
-            } else {
-                markErr();
-            }
-        }
-
-        function closeHash(style, content) {
-            if(content == "#") {
-                cont(closetagname, expect("]"));
-            } else {
-                markErr();
-            }
-        }
+      state.tokenize = tokenBase('>','tag bracket',hook);
+      return 'tag bracket';
+    }
 
 
-        function tagname(style, content) {
-            if (style == "identifier") {
-                currentTag = content.toLowerCase();
-                token.style = "directive";
-                cont();
-            } else {
-                currentTag = null;
-                pass();
-            }
-        }
+    function tokenCloseMacro(stream, state) {
+      if(stream.eat('>')) {
+        state.tokenize = null;
+        return 'tag bracket';
+      }
 
-        function closetagname(style, content) {
-            if (style == "identifier") {
-                token.style = "directive";
-                if (context && content.toLowerCase() == context.name) {
-                    popContext();
-                } else {
-                    markErr();
-                }
-            }
-            cont();
-        }
+      stream.eatWhile(/[^\>]/);
+      var macroName = '@'+stream.current();
 
-        function notEndTag(style, content) {
-            if (content == "/>" || content == ">") {
-                pass();
-            } else {
-                cont(notEndTag);
-            }
-        }
+      if(macroName != state.context.type) {
+        return 'error';
+      }
 
-        function notHashEndTag(style, content) {
-            if (content == "/]" || content == "]") {
-                pass();
-            } else {
-                cont(notHashEndTag);
-            }
-        }
+      popContext(state);
 
-        function endtag(closeTagPattern, endTagPattern, startOfLine) {
-            return function(style, content) {
-                if (content == closeTagPattern || (content == endTagPattern && autoSelfClosers.hasOwnProperty(currentTag))) {
-                    cont();
-                } else if (content == endTagPattern) {
-                    pushContext(currentTag, startOfLine);
-                    cont();
-                } else {
-                    markErr();
-                    cont(arguments.callee);
-                }
-            };
-        }
+      return 'variable-3';
+    }
 
 
+
+    return {
+      startState: function(){
         return {
-            indent: function() { return indented; },
-
-            token: function(stream, state) {
-                if (!tokens) {
-                    tokens = tokenizeFreemarker(stream);
-                }
-                token = tokens.next();
-
-                if (stream.eol())
-                    tokens = null;
-                if (token === null) return null;
-                if (token.style == "whitespace" && tokenNr == 0)
-                    indented = token.value.length;
-                else
-                    tokenNr++;
-                if (token.content == "\n") {
-                    indented = tokenNr = 0;
-                    token.indentation = computeIndentation(context);
-                }
-
-                if (token.style == "whitespace" || token.type == "comment")
-                    return token.type;
-                var recursiveHelper;
-                while(true) {
-                    consume = false;
-                    recursiveHelper = cc.pop();
-                    recursiveHelper(token.style, token.content);
-                    if (consume) {
-                        return token.type;
-                    }
-                }
-            },
-
-            copyState: function(){
-                var _cc = cc.concat([]), _tokenState = tokens.state, _context = context;
-                var parser = this;
-
-                return function(input){
-                    cc = _cc.concat([]);
-                    tokenNr = indented = 0;
-                    context = _context;
-                    // tokens = tokenizeFreemarker(input, _tokenState);
-                    return parser;
-                };
-            },
-            electricChars: '>'
+          tokenize: null, 
+          advancing: true,
+          context: new Context(0, 0, "top", false),
+          indented: 0
         };
+      },
 
+      token: function(stream, state){
+        if(stream.eatSpace()) return null;
+
+        state.indented = stream.indentation();
+
+        if(state.tokenize) {
+          var style = state.tokenize(stream, state);
+          prevContent = stream.current();
+          return style;
+        }
+
+        while(state.context.type.match(/[\)\]\}]/)) {
+          popContext(state);
+        }
+
+        if(stream.match('${')) {
+          state.tokenize = tokenBase('}','bracket');
+          return 'bracket';
+        }
+
+        if(stream.match('<#')) {
+          if(stream.match('--')) {
+            state.tokenize = tokenComment;
+            return 'comment';
+          }
+
+          state.tokenize = tokenOpenDirective;
+          return 'tag bracket';
+        }
+
+        if(stream.match('<@')) {
+          state.tokenize = tokenOpenMacro;
+          return 'tag bracket';
+        }
+
+        if(stream.match('</#')) {
+          state.tokenize = tokenCloseDirective;
+          return 'tag bracket';
+        }
+
+        if(stream.match('</@')) {
+          state.tokenize = tokenCloseMacro;
+          return 'tag bracket';
+        }
+
+        state.advancing = false;
+
+        return null;
+      },
+      indent: function(state, textAfter){
+
+        if (state.tokenize == tokenComment) return CodeMirror.Pass;
+
+        var ctx = state.context, firstChar = textAfter && textAfter.charAt(0);
+        
+        var closing = true;
+        if(ctx.type == 'top') {
+          closing = true;
+        } else if(ctx.type.match(/[\}\]\)]/)) {
+          closing = firstChar == ctx.type;
+        } else if(ctx.type.indexOf('@') == 0) {
+          closing = /^\s*\<\/\@/.test(textAfter);
+        } else if('if else elseif'.indexOf(ctx.type) >= 0) {
+          closing = /^\s*<(#else|\/#if)/.test(textAfter);
+        } else if('case default'.indexOf(ctx.type) >= 0) {
+          closing = /^\s*<#(case|default)/.test(textAfter);
+        } else if(parserConfig.selfCloseDirective.propertyIsEnumerable(ctx.type)) {
+          closing = true;
+        } else {
+          closing = /^\s*\<\/\#/.test(textAfter);
+        }
+
+        if (ctx.align) return ctx.column + (closing ? 0 : 1);
+        else return ctx.indented + (closing ? 0 : config.indentUnit);
+      },
+      blockCommentStart: "<#--",
+      blockCommentEnd: "-->",
+      electricInput: /<\/[\#\@][\s\w\.]+>$/,
+      fold: ["comment","xml","brace"]
+    };
+  });
+
+
+  CodeMirror.defineMode("freemarker", function(config) {
+    var htmlMode = CodeMirror.getMode(config, "text/html");
+    var ftlMode = CodeMirror.getMode(config, {
+      name: 'ftl:inner',
+      directive: words(pairCloseDirective + selfCloseDirective),
+      selfCloseDirective: words(selfCloseDirective),
+      builtin: words(builtin),
+      atoms: words(atoms)
     });
+
+    function dispatch(stream, state) {
+      var isFtl = state.curMode === ftlMode;
+      if(!isFtl) {
+        if(stream.match(/^(<\/?\#)|(<\/?\@)|(\$\{)/, false)) {
+          state.curMode = ftlMode;
+          state.curState = state.ftl; 
+          state.curState.advancing = true;
+          state.curState.indented = stream.indentation();
+          return null;
+        }
+
+      } else if(isFtl && !state.ftl.advancing) {
+
+        state.curMode = htmlMode;
+        state.curState = state.html;
+        state.curState.htmlState.indented = stream.indentation();
+        return null;
+      }
+
+      return state.curMode.token(stream, state.curState);
+    }
+
+    return {
+      startState: function() {
+        var html = CodeMirror.startState(htmlMode), ftl = CodeMirror.startState(ftlMode);
+        return {
+          html: html,
+          ftl: ftl,
+          curMode: ftlMode,
+          curState: ftl,
+          pending: null
+        };
+      },
+
+      copyState: function(state) {
+        var html = state.html, htmlNew = CodeMirror.copyState(htmlMode, html),
+            ftl = state.ftl, ftlNew = CodeMirror.copyState(ftlMode, ftl), cur;
+        if (state.curMode == htmlMode) cur = htmlNew;
+        else cur = ftlNew;
+        return {html: htmlNew, ftl: ftlNew, curMode: state.curMode, curState: cur,
+                pending: state.pending};
+      },
+
+      token: dispatch,
+
+      indent: function(state, textAfter){
+        if ((state.curMode != ftlMode && /^\s*<\/?[\#\@]/.test(textAfter))) {
+          return ftlMode.indent(state.ftl, textAfter);
+        } 
+
+        var indent = state.curMode.indent(state.curState, textAfter);
+          
+        if(state.curMode == htmlMode && state.html.htmlState && state.html.htmlState.context && indent == 0) {
+            indent = state.html.htmlState.context.indent;
+        }
+        return indent;
+      },
+      innerMode: function(state) { return {state: state.curState, mode: state.curMode};}
+    };
+  });
+
+  CodeMirror.defineMIME("text/x-freemarker", "freemarker");
+
 });
