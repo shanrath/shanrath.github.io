@@ -1,7 +1,6 @@
 /*
 (C) CodeMirror project, MIT License 
 Based on Sublime Text's Monokai theme
-
 */
 
 .cm-s-monokai.CodeMirror { background: #272822; color: #f8f8f2; }
@@ -18,7 +17,7 @@ Based on Sublime Text's Monokai theme
 .cm-s-monokai span.cm-atom { color: #ae81ff; }
 .cm-s-monokai span.cm-number { color: #ae81ff; }
 
-.cm-s-monokai span.cm-tab { color: #33333; 	text-decoration: line-through; text-decoration-color: #404040;	text-decoration-style: dotted;}
+.cm-s-monokai span.cm-tab { color: #555555 !important; 	text-decoration: line-through; text-decoration-color: #404040;	text-decoration-style: dotted;}
 .cm-s-monokai span.cm-property, .cm-s-monokai span.cm-attribute { color: #a6e22e; }
 .cm-s-monokai span.cm-keyword { color: #f92672; }
 .cm-s-monokai span.cm-builtin { color: #66d9ef; }
