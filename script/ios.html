@@ -341,7 +341,6 @@
                 authRules = authRules.replace('{{password}}',password);
                 authRules = authRules.replace('{{hostname}}',hostname);
                 authRules = authRules.replace('{{sharedsecret}}',sharedsecret);
-                }
                 if (onDemandRulesArr.length > 0){
                     onDemandRules = onDemandRules.replace('{{onDemandRulesDict}}', '<key>OnDemandRules</key>\n          <array>\n' + onDemandRulesArr.join('')+'          </array>\n');
                 } else {
