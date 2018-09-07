@@ -108,7 +108,7 @@
             </div>
             <!-- Text input-->
             <div class="form-group">
-                <label class="col-md-4 control-label" for="sharedsecret">Shared Secret</label>
+                <label class="col-md-4 control-label" for="sharedsecret">Shared Secret (base64Enc for IPSEC)</label>
                 <div class="col-md-4">
                     <input id="sharedsecret" name="sharedsecret" type="password" placeholder="" class="form-control input-md">
                 </div>
@@ -159,24 +159,10 @@
         xmlString += '      <key>PayloadUUID</key>\n';
         xmlString += '      <string>{{uuid1}}</string>\n';
         xmlString += '      <key>VPNType</key>\n';
-        xmlString += '      <string>L2TP</string>\n';
+        xmlString += '      <string>{{vpntype}}</string>\n';
         xmlString += '      <key>IPSec</key>\n';
         xmlString += '      <dict>\n';
-        xmlString += '        <key>AuthenticationMethod</key>\n';
-        xmlString += '        <string>SharedSecret</string>\n';
-        xmlString += '        <key>LocalIdentifierType</key>\n';
-        xmlString += '        <string>KeyID</string>\n';
-        xmlString += '        <key>SharedSecret</key>\n';
-        xmlString += '        <string>{{sharedsecret}}</string>\n';
-        xmlString += '      </dict>\n';
-        xmlString += '      <key>PPP</key>\n';
-        xmlString += '      <dict>\n';
-        xmlString += '        <key>AuthName</key>\n';
-        xmlString += '        <string>{{login}}</string>\n';
-        xmlString += '        <key>AuthPassword</key>\n';
-        xmlString += '        <string>{{password}}</string>\n';
-        xmlString += '        <key>CommRemoteAddress</key>\n';
-        xmlString += '        <string>{{hostname}}</string>\n';
+        xmlString += '      {{authRules}};
         xmlString += '      </dict>\n';
         xmlString += '      {{onDemandRules}}';
         xmlString += '      <key>OverridePrimary</key>\n';
@@ -211,7 +197,6 @@
         onDemandRules += '   <integer>{{onDemandEnabled}}</integer>\n';
         onDemandRules += '   {{onDemandRulesDict}}'
         onDemandRulesArr = [];
-        
         var wifiDict = ''
         wifiDict += '        <dict>\n';
         wifiDict += '          <key>InterfaceTypeMatch</key>\n';
@@ -231,6 +216,43 @@
         cellularDefaultDict += '          <key>Action</key>\n';
         cellularDefaultDict += '          <string>Connect</string>\n';  //Default state tells it what to do by default. If wifi only is enabled, this should be disabled (so disable on cellular)
         cellularDefaultDict += '        </dict>\n';
+        var pppDict = '';
+        pppDict += '      <dict>\n';
+        pppDict += '        <key>AuthenticationMethod</key>\n';
+        pppDict += '        <string>SharedSecret</string>\n';
+        pppDict += '        <key>LocalIdentifierType</key>\n';
+        pppDict += '        <string>KeyID</string>\n';
+        pppDict += '        <key>SharedSecret</key>\n';
+        pppDict += '        <string>{{sharedsecret}}</string>\n';
+        pppDict += '      </dict>\n';
+        pppDict += '      <key>PPP</key>\n';
+        pppDict += '      <dict>\n';
+        pppDict += '        <key>AuthName</key>\n';
+        pppDict += '        <string>{{login}}</string>\n';
+        pppDict += '        <key>AuthPassword</key>\n';
+        pppDict += '        <string>{{password}}</string>\n';
+        pppDict += '        <key>CommRemoteAddress</key>\n';
+        pppDict += '        <string>{{hostname}}</string>\n';
+        pppDict += '      </dict>\n';
+        var ipsecDict = '';
+        ipsecDict += '      <dict>\n';
+        ipsecDict += '        <key>RemoteAddress</key>\n';
+        ipsecDict += '        <string>{{hostname}}</string>\n';
+        ipsecDict += '        <key>AuthenticationMethod</key>\n';
+        ipsecDict += '        <string>SharedSecret</string>\n';
+        ipsecDict += '        <!-- SharedSecret must be base64 encoded  -->\n';
+        ipsecDict += '        <key>SharedSecret</key>\n';
+        ipsecDict += '        <data>{{sharedsecret}}</data>\n';
+        ipsecDict += '        <key>XAuthEnabled</key>\n';
+        ipsecDict += '        <integer>1</integer>\n';
+        ipsecDict += '        <key>XAuthName</key>\n';
+        ipsecDict += '        <string>{{login}}</string>\n';
+        ipsecDict += '        <key>XAuthPassword</key>\n';
+        ipsecDict += '        <string>{{password}}</string>\n';
+        ipsecDict += '        <key>LocalIdentifierType</key>\n';
+        ipsecDict += '        <string>KeyID</string>\n';
+        ipsecDict += '      </dict>\n';
+        var authRules;
         $(document).ready(function () {
             function download(filename, text) {
                 var element = document.createElement('a');
@@ -274,6 +296,7 @@
                 xmlString = xmlString.replace('{{uuid2}}', generateUUID());
                 xmlString = xmlString.replace('{{uuid3}}', generateUUID());
                 xmlString = xmlString.replace('{{identifier}}', identifier);
+                xmlString = xmlString.replace('{{vpntype}}', vpntype);
                 if (ssids && autoconnect !== 'none'){
                     onDemandSSID = '';
                     onDemandSSID += '        <dict>\n';
@@ -308,12 +331,24 @@
                     onDemandRules = onDemandRules.replace('{{onDemandEnabled}}', '0');   
                     console.log('Removing onDemandEnabled');
                 }
+                if (vpntype == 'IPSEC'){
+                    authRules = ipsecDict;
+                }
+                if(vpntype == 'L2TP'){
+                    authRules = pppDict;
+                }
+                authRules = authRules.replace('{{login}}',login);
+                authRules = authRules.replace('{{password}}',password);
+                authRules = authRules.replace('{{hostname}}',hostname);
+                authRules = authRules.replace('{{sharedsecret}}',sharedsecret);
+                }
                 if (onDemandRulesArr.length > 0){
                     onDemandRules = onDemandRules.replace('{{onDemandRulesDict}}', '<key>OnDemandRules</key>\n          <array>\n' + onDemandRulesArr.join('')+'          </array>\n');
                 } else {
                     onDemandRules = onDemandRules.replace('{{onDemandRulesDict}}', '');
                 }
-                xmlString = xmlString.replace('{{onDemandRules}}', onDemandRules)
+                xmlString = xmlString.replace('{{onDemandRules}}', onDemandRules);
+                xmlString = xmlString.replace('{{ppprules}}', authRules);
                 console.log(xmlString);
                 download('vpn.mobileconfig', xmlString);
             })
