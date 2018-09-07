@@ -347,7 +347,7 @@
                     onDemandRules = onDemandRules.replace('{{onDemandRulesDict}}', '');
                 }
                 xmlString = xmlString.replace('{{onDemandRules}}', onDemandRules);
-                xmlString = xmlString.replace('{{authrules}}', authRules);
+                xmlString = xmlString.replace('{{authRules}}', authRules);
                 console.log(xmlString);
                 download('vpn.mobileconfig', xmlString);
             })
